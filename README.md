@@ -38,6 +38,8 @@ La demo simula llamadas a la Lambda y usa el mismo `productos.txt` durante toda 
 
 Abre `productos.txt` y comprueba que el ID de la prueba aparece una sola vez con los datos actualizados. Para repetirla, usa un ID libre, por ejemplo `41`.
 
+Probando la lamda 2 para que me actualice los cambios por actions
+
 ## 3. Rutas del catálogo
 
 | Operación | Function URL | API Gateway |

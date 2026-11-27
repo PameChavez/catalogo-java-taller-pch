@@ -1,8 +1,6 @@
 name: Catálogo Java · CI/CD
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -11,6 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  identidad:
+    name: Identidad OIDC del repositorio
+    if: ${{ github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Ver el identificador OIDC del repositorio
+        shell: bash
+        run: |
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" |
+            node -e 'const r = JSON.parse(require("fs").readFileSync(0, "utf8")); const p = JSON.parse(Buffer.from(r.value.split(".")[1], "base64url")); console.log("sub: " + p.sub);'
+
   ci:
     name: Compilar, probar y empaquetar
     runs-on: ubuntu-latest
@@ -25,7 +39,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Compilar y probar GET con el mismo evento que API Gateway
+      - name: Compilar y probar las rutas del catálogo
         shell: bash
         run: |
           mkdir -p build-ci/classes build-ci/package/lib
@@ -37,23 +51,35 @@ jobs:
           class VerificarCatalogo {
               public static void main(String[] args) {
                   var handler = new CatalogoHandler();
-                  verificar(handler, "1", 200);
-                  verificar(handler, "9999999999", 404);
-                  verificar(handler, "abc", 400);
+                  verificar(handler, "GET /productos/{id}", "1", "", 200, "Teclado");
+                  verificar(handler, "GET /productos/{id}", "9999999999", "", 404, "error");
+                  verificar(handler, "GET /productos/{id}", "abc", "", 400, "error");
+                  String nuevo = "{\"id\":40,\"nombre\":\"Monitor\",\"precio\":180}";
+                  verificar(handler, "POST /productos", "", nuevo, 201, "Monitor");
+                  verificar(handler, "POST /productos", "", nuevo, 409, "error");
+                  String cambios = "{\"nombre\":\"Monitor HD\",\"precio\":195}";
+                  verificar(handler, "PUT /productos/{id}", "40", cambios, 200, "Monitor HD");
+                  verificar(handler, "GET /productos/{id}", "40", "", 200, "Monitor HD");
+                  verificar(handler, "GET /productos", "", "", 200, "Monitor HD");
               }
 
-              private static void verificar(CatalogoHandler handler, String id, int esperado) {
+              private static void verificar(CatalogoHandler handler, String ruta, String id,
+                      String cuerpo, int esperado, String contenido) {
                   Map<String, Object> evento = Map.of(
                       "version", "2.0",
-                      "routeKey", "GET /productos/{id}",
-                      "requestContext", Map.of("http", Map.of("method", "GET")),
-                      "pathParameters", Map.of("id", id)
+                      "routeKey", ruta,
+                      "requestContext", Map.of("http", Map.of("method", ruta.split(" ")[0])),
+                      "pathParameters", id.isEmpty() ? Map.of() : Map.of("id", id),
+                      "body", cuerpo
                   );
                   var respuesta = handler.handleRequest(evento);
-                  if (!Integer.valueOf(esperado).equals(respuesta.get("statusCode"))) {
-                      throw new AssertionError("ID " + id + ": " + respuesta);
+                  String json = (String) respuesta.get("body");
+                  if (!Integer.valueOf(esperado).equals(respuesta.get("statusCode"))
+                          || !json.contains(contenido)
+                          || ("GET /productos".equals(ruta) && !json.stripLeading().startsWith("["))) {
+                      throw new AssertionError(ruta + " " + id + ": " + respuesta);
                   }
-                  System.out.println("ID " + id + " -> " + esperado);
+                  System.out.println(ruta + " " + id + " -> " + esperado);
               }
           }
           JAVA
@@ -75,7 +101,7 @@ jobs:
 
   cd:
     name: Desplegar y verificar Lambda
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN != '' }}
+    if: ${{ github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != '' }}
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 10
